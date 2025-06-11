@@ -1,56 +1,69 @@
 import streamlit as st
 import pandas as pd
 import requests
+import os
+import time
 from datetime import datetime
 import plotly.express as px
 import numpy as np
 
 # Configuration de l'API Twelve Data
-API_KEY = "YOUR_TWELVE_DATA_API_KEY"  # Remplace par ta clé API Twelve Data
+API_KEY = os.getenv("API_KEY", "YOUR_TWELVE_DATA_API_KEY")  # Charge depuis les secrets
 BASE_URL = "https://api.twelvedata.com"
 
-# Liste des paires forex à scanner
+# Liste des paires forex à scanner (réduite pour tests)
 FOREX_PAIRS = [
     "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD",
     "USD/CHF", "NZD/USD", "EUR/JPY", "GBP/JPY", "EUR/GBP"
 ]
 
 # Fonction pour récupérer les données OHLCV et indicateurs
-@st.cache_data(ttl=60)
-def fetch_technical_data(symbol, interval="1h", outputsize=50):
+def fetch_technical_data(symbol, interval="1h", outputsize=20):
     try:
         # Récupérer les données OHLC
         url = f"{BASE_URL}/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={API_KEY}"
-        response = requests.get(url).json()
-        if "values" not in response:
+        response = requests.get(url, timeout=10).json()
+        if "values" not in response or response.get("status") == "error":
+            st.warning(f"Données OHLC indisponibles pour {symbol}: {response.get('message', 'Erreur API')}")
             return None
         df = pd.DataFrame(response["values"])
         df["datetime"] = pd.to_datetime(df["datetime"])
         df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-        df = df[::-1].reset_index(drop=True)  # Inverser pour avoir les données récentes en dernier
+        df = df[::-1].reset_index(drop=True)
 
         # Calculer ADX
         adx_url = f"{BASE_URL}/adx?symbol={symbol}&interval={interval}&time_period=14&apikey={API_KEY}"
-        adx_data = requests.get(adx_url).json()
-        df["adx"] = [float(x["adx"]) for x in adx_data["values"][:len(df)]][::-1]
+        adx_response = requests.get(adx_url, timeout=10).json()
+        if "values" not in adx_response or adx_response.get("status") == "error":
+            st.warning(f"ADX indisponible pour {symbol}")
+            return None
+        df["adx"] = [float(x["adx"]) for x in adx_response["values"][:len(df)]][::-1]
 
         # Calculer ATR
         atr_url = f"{BASE_URL}/atr?symbol={symbol}&interval={interval}&time_period=14&apikey={API_KEY}"
-        atr_data = requests.get(atr_url).json()
-        df["atr"] = [float(x["atr"]) for x in atr_data["values"][:len(df)]][::-1]
+        atr_response = requests.get(atr_url, timeout=10).json()
+        if "values" not in atr_response or atr_response.get("status") == "error":
+            st.warning(f"ATR indisponible pour {symbol}")
+            return None
+        df["atr"] = [float(x["atr"]) for x in atr_response["values"][:len(df)]][::-1]
 
         # Calculer RSI
         rsi_url = f"{BASE_URL}/rsi?symbol={symbol}&interval={interval}&time_period=14&apikey={API_KEY}"
-        rsi_data = requests.get(rsi_url).json()
-        df["rsi"] = [float(x["rsi"]) for x in rsi_data["values"][:len(df)]][::-1]
+        rsi_response = requests.get(rsi_url, timeout=10).json()
+        if "values" not in rsi_response or rsi_response.get("status") == "error":
+            st.warning(f"RSI indisponible pour {symbol}")
+            return None
+        df["rsi"] = [float(x["rsi"]) for x in rsi_response["values"][:len(df)]][::-1]
 
         return df
     except Exception as e:
-        st.error(f"Erreur pour {symbol}: {e}")
+        st.warning(f"Erreur pour {symbol}: {str(e)}")
         return None
 
 # Fonction pour détecter les cassures
 def detect_breakout(df, lookback=20):
+    if df is None or len(df) < lookback:
+        return "Neutre"
     recent_high = df["high"].iloc[-lookback:-1].max()
     recent_low = df["low"].iloc[-lookback:-1].min()
     current_close = df["close"].iloc[-1]
@@ -99,6 +112,7 @@ if st.button("Lancer le Scan"):
                     "Signal": breakout_signal,
                     "Dernier Prix": round(df["close"].iloc[-1], 5)
                 })
+        time.sleep(0.5)  # Délai pour éviter de dépasser les limites de l'API
         progress_bar.progress((i + 1) / len(FOREX_PAIRS))
 
     # Afficher les résultats
@@ -120,3 +134,4 @@ if st.button("Lancer le Scan"):
 st.markdown("---")
 st.write(f"Dernière mise à jour: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.write("Powered by Twelve Data API & Streamlit")
+
